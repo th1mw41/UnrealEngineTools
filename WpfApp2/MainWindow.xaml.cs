@@ -2240,9 +2240,12 @@ namespace WpfApp2
         {
             log("Locating Player Transform...");
             var mapInfo = await GetCurrentMapInfo(client);
+            string url = "http://localhost:30010/remote/object/call";
 
             var getPawnPayload = new { objectPath = "/Script/Engine.Default__GameplayStatics", functionName = "GetPlayerPawn", parameters = new { WorldContextObject = mapInfo.FullPath, PlayerIndex = 0 } };
-            var response = await client.PutAsync("http://localhost:30010/remote/object/call", new StringContent(JsonSerializer.Serialize(getPawnPayload), Encoding.UTF8, "application/json"));
+
+            // FIX: Swapped client.PutAsync for SendUnrealRequest
+            var response = await SendUnrealRequest(client, url, getPawnPayload);
 
             if (response.IsSuccessStatusCode)
             {
@@ -2250,10 +2253,19 @@ namespace WpfApp2
                 {
                     string pawnPath = doc.RootElement.GetProperty("ReturnValue").GetString();
 
-                    var locRes = await client.PutAsync("http://localhost:30010/remote/object/call", new StringContent(JsonSerializer.Serialize(new { objectPath = pawnPath, functionName = "K2_GetActorLocation" }), Encoding.UTF8, "application/json"));
+                    // Safety check: Make sure we are actually in Play mode (PIE)
+                    if (string.IsNullOrEmpty(pawnPath) || pawnPath == "None")
+                    {
+                        log("[ERROR] No Player Pawn found. Are you currently in Play-In-Editor (PIE) mode?");
+                        return;
+                    }
+
+                    var locPayload = new { objectPath = pawnPath, functionName = "K2_GetActorLocation" };
+                    var locRes = await SendUnrealRequest(client, url, locPayload);
                     var locJson = JsonDocument.Parse(await locRes.Content.ReadAsStringAsync()).RootElement.GetProperty("ReturnValue");
 
-                    var rotRes = await client.PutAsync("http://localhost:30010/remote/object/call", new StringContent(JsonSerializer.Serialize(new { objectPath = pawnPath, functionName = "K2_GetActorRotation" }), Encoding.UTF8, "application/json"));
+                    var rotPayload = new { objectPath = pawnPath, functionName = "K2_GetActorRotation" };
+                    var rotRes = await SendUnrealRequest(client, url, rotPayload);
                     var rotJson = JsonDocument.Parse(await rotRes.Content.ReadAsStringAsync()).RootElement.GetProperty("ReturnValue");
 
                     var newP = new PlayerPreset
@@ -2267,10 +2279,16 @@ namespace WpfApp2
                         Roll = (float)rotJson.GetProperty("Roll").GetDouble()
                     };
 
-                    _savedPresets.Add(newP); _presetDropdown.Items.Add(newP); _presetDropdown.SelectedItem = newP;
+                    _savedPresets.Add(newP);
+                    _presetDropdown.Items.Add(newP);
+                    _presetDropdown.SelectedItem = newP;
                     File.WriteAllText(_saveFilePath, JsonSerializer.Serialize(_savedPresets));
                     log($"[SUCCESS] Saved Transform: {newP.Name}");
                 }
+            }
+            else
+            {
+                log($"[ERROR] Could not fetch pawn: {await response.Content.ReadAsStringAsync()}");
             }
         }
 
@@ -2279,12 +2297,22 @@ namespace WpfApp2
             try
             {
                 var mapInfo = await GetCurrentMapInfo(client);
+                string url = "http://localhost:30010/remote/object/call";
+
                 var getPawnPayload = new { objectPath = "/Script/Engine.Default__GameplayStatics", functionName = "GetPlayerPawn", parameters = new { WorldContextObject = mapInfo.FullPath, PlayerIndex = 0 } };
-                var pResponse = await client.PutAsync("http://localhost:30010/remote/object/call", new StringContent(JsonSerializer.Serialize(getPawnPayload), Encoding.UTF8, "application/json"));
+
+                // FIX: Swapped client.PutAsync for SendUnrealRequest
+                var pResponse = await SendUnrealRequest(client, url, getPawnPayload);
 
                 if (pResponse.IsSuccessStatusCode)
                 {
                     string pawnPath = JsonDocument.Parse(await pResponse.Content.ReadAsStringAsync()).RootElement.GetProperty("ReturnValue").GetString();
+
+                    if (string.IsNullOrEmpty(pawnPath) || pawnPath == "None")
+                    {
+                        log("[ERROR] No Player Pawn found to teleport. Start the game (PIE) first.");
+                        return;
+                    }
 
                     var telePayload = new
                     {
@@ -2299,8 +2327,15 @@ namespace WpfApp2
                         }
                     };
 
-                    await client.PutAsync("http://localhost:30010/remote/object/call", new StringContent(JsonSerializer.Serialize(telePayload), Encoding.UTF8, "application/json"));
-                    log("✅ Player Transform Updated!");
+                    // FIX: Swapped client.PutAsync for SendUnrealRequest
+                    var teleResponse = await SendUnrealRequest(client, url, telePayload);
+
+                    if (teleResponse.IsSuccessStatusCode) log("✅ Player Transform Updated!");
+                    else log($"❌ Teleport failed: {await teleResponse.Content.ReadAsStringAsync()}");
+                }
+                else
+                {
+                    log($"❌ Failed to locate pawn: {await pResponse.Content.ReadAsStringAsync()}");
                 }
             }
             catch (Exception ex) { log($"[ERROR] {ex.Message}"); }
